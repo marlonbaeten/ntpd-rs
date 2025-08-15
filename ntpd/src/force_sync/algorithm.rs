@@ -116,6 +116,7 @@ impl<C: NtpClock> SingleShotController<C> {
             let avg_offset = NtpDuration::from_seconds(sum / (count as f64));
             self.offer_clock_change(avg_offset);
 
+            #[cfg(not(test))]
             std::process::exit(0);
         }
     }
@@ -238,5 +239,101 @@ where
 
     fn observe(&self) -> ntp_proto::ObservableSourceTimedata {
         ntp_proto::ObservableSourceTimedata::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ntp_proto::{NtpInstant, NtpLeapIndicator, NtpTimestamp, SynchronizationConfig};
+
+    #[derive(Debug, Clone, Default)]
+    struct TestClock;
+
+    impl NtpClock for TestClock {
+        type Error = std::convert::Infallible;
+
+        fn now(&self) -> Result<NtpTimestamp, Self::Error> {
+            Ok(NtpTimestamp::from_seconds_nanos_since_ntp_era(0, 0))
+        }
+
+        fn set_frequency(&self, _freq: f64) -> Result<NtpTimestamp, Self::Error> {
+            self.now()
+        }
+
+        fn get_frequency(&self) -> Result<f64, Self::Error> {
+            Ok(0.0)
+        }
+
+        fn step_clock(&self, _offset: NtpDuration) -> Result<NtpTimestamp, Self::Error> {
+            self.now()
+        }
+
+        fn disable_ntp_algorithm(&self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn error_estimate_update(
+            &self,
+            _est_error: NtpDuration,
+            _max_error: NtpDuration,
+        ) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn status_update(&self, _leap_status: NtpLeapIndicator) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    fn measurement(offset: f64) -> Measurement<NtpDuration> {
+        Measurement {
+            delay: NtpDuration::ZERO,
+            offset: NtpDuration::from_seconds(offset),
+            localtime: NtpTimestamp::from_seconds_nanos_since_ntp_era(0, 0),
+            monotime: NtpInstant::now(),
+            stratum: 0,
+            root_delay: NtpDuration::ZERO,
+            root_dispersion: NtpDuration::ZERO,
+            leap: NtpLeapIndicator::NoWarning,
+            precision: 0,
+        }
+    }
+
+    fn controller() -> SingleShotController<TestClock> {
+        SingleShotController::new(
+            TestClock::default(),
+            SynchronizationConfig {
+                minimum_agreeing_sources: 2,
+                ..Default::default()
+            },
+            SingleShotControllerConfig {
+                expected_sources: 2,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn does_not_step_without_agreement() {
+        super::super::reset_offered_offset();
+        let mut ctrl = controller();
+
+        ctrl.source_message(SourceId::new(), Measurements::Ntp(measurement(0.0)));
+        ctrl.source_message(SourceId::new(), Measurements::Ntp(measurement(10.0)));
+
+        assert!(super::super::offered_offset().is_none());
+    }
+
+    #[test]
+    fn steps_when_sources_agree() {
+        super::super::reset_offered_offset();
+        let mut ctrl = controller();
+
+        ctrl.source_message(SourceId::new(), Measurements::Ntp(measurement(1.0)));
+        ctrl.source_message(SourceId::new(), Measurements::Ntp(measurement(1.2)));
+
+        let offset = super::super::offered_offset().expect("offset expected");
+        assert!((offset.to_seconds() - 1.1).abs() < 1e-6);
     }
 }

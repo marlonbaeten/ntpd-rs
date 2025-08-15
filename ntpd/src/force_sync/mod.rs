@@ -1,5 +1,7 @@
+#[cfg(not(test))]
+use std::io::Write;
 use std::{
-    io::{IsTerminal, Write},
+    io::IsTerminal,
     path::PathBuf,
     process::ExitCode,
     time::{SystemTime, UNIX_EPOCH},
@@ -7,6 +9,8 @@ use std::{
 
 use algorithm::{SingleShotController, SingleShotControllerConfig};
 use ntp_proto::{NtpClock, NtpDuration};
+#[cfg(test)]
+use std::sync::Mutex;
 use tokio::runtime::Builder;
 
 use crate::daemon::{
@@ -14,6 +18,9 @@ use crate::daemon::{
 };
 
 mod algorithm;
+
+#[cfg(test)]
+static OFFERED_OFFSET: Mutex<Option<NtpDuration>> = Mutex::new(None);
 
 fn human_readable_duration(abs_offset: f64) -> String {
     let mut offset = abs_offset;
@@ -66,6 +73,7 @@ fn try_date_display(offset: NtpDuration) -> Option<String> {
         })
 }
 
+#[cfg(not(test))]
 impl<C: NtpClock> SingleShotController<C> {
     fn offer_clock_change(&self, offset: NtpDuration) {
         let offset_ms = offset.to_seconds();
@@ -107,6 +115,23 @@ impl<C: NtpClock> SingleShotController<C> {
             println!("Time not updated");
         }
     }
+}
+
+#[cfg(test)]
+impl<C: NtpClock> SingleShotController<C> {
+    fn offer_clock_change(&self, offset: NtpDuration) {
+        *OFFERED_OFFSET.lock().unwrap() = Some(offset);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn offered_offset() -> Option<NtpDuration> {
+    *OFFERED_OFFSET.lock().unwrap()
+}
+
+#[cfg(test)]
+pub(crate) fn reset_offered_offset() {
+    *OFFERED_OFFSET.lock().unwrap() = None;
 }
 
 pub(crate) fn force_sync(config: Option<PathBuf>) -> std::io::Result<ExitCode> {
